@@ -21,6 +21,7 @@ node_modules/
 out/
 dist/
 build/
+*.tsbuildinfo
 
 # Env files (keep examples tracked)
 .env
@@ -30,11 +31,13 @@ build/
 !/.env.example
 
 # Logs, caches, outputs
-logs/
-cache/
-output/
-archives/
-update_output/
+/logs/
+/cache/
+/output/
+/archives/
+/update_output/
+.build-jobs/
+/.imports/
 
 # Editors/IDE
 .idea/
@@ -48,3 +51,5 @@ yarn-error.log*
 .pnpm-debug.log*
 .vercel/
 input/_pdfs/
+input/
+.graphrag/

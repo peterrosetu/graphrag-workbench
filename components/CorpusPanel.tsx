@@ -1,578 +1,12 @@
 'use client'
 
-import React, { useEffect, useRef, useState } from 'react'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
+import { Check, Cloud, Download, FileInput, FilePlus, FolderInput, FolderOpen, HardDrive, Loader2, Pencil, Plus, RotateCcw, Settings2, Square, Terminal, Trash2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Progress } from '@/components/ui/progress'
-import { Skeleton } from '@/components/ui/skeleton'
-import { Loader2, Plus, Database, GitBranch, Users, Trash2, Zap, ArrowUpDown, Archive, ChevronDown, RotateCcw, Terminal } from 'lucide-react'
-// Dialog imports removed (no modal)
-import { Badge } from '@/components/ui/badge'
-import { DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
-import { ScrollArea } from '@/components/ui/scroll-area'
+import { ProviderSetupDialog, type ProviderStatus } from '@/components/ProviderSetupDialog'
 
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table'
-import {
-  ColumnDef,
-  SortingState,
-  flexRender,
-  getCoreRowModel,
-  getSortedRowModel,
-  useReactTable,
-} from '@tanstack/react-table'
-
-type CorpusState = {
-  uploads: { name: string; size: number; mtime: number; type: 'txt'|'pdf'; status?: string }[]
-  outputStats?: { entities?: number; relationships?: number; communities?: number; text_units?: number; last_index_time?: string }
-  queue: { name: string; status: 'pending'|'processing'|'done'|'error'; message?: string }[]
-  kgName?: string
-}
-
-export default function CorpusPanel() {
-  const [state, setState] = useState<CorpusState>({ uploads: [], queue: [] })
-  const [persistedLogs, setPersistedLogs] = useState<{ ts: number; text: string }[]>([])
-  const [uploading, setUploading] = useState(false)
-  const [dragOver, setDragOver] = useState(false)
-  const [running, setRunning] = useState(false)
-  const [liveLogs, setLiveLogs] = useState<string[]>([])
-  const [progress, setProgress] = useState<number>(0)
-  const [, setStatus] = useState<string>('Idle')
-  const [initialLoading, setInitialLoading] = useState(true)
-  // OpenAI-only mode
-  const sseRef = useRef<EventSource | null>(null)
-  const logContainerRef = useRef<HTMLDivElement | null>(null)
-  const [stickToBottom, setStickToBottom] = useState(true)
-  const [archives, setArchives] = useState<{ name: string; kgName?: string; sizeKB: number }[]>([])
-  const [archivesMenuOpen, setArchivesMenuOpen] = useState(false)
-  const [startTime, setStartTime] = useState<number | null>(null)
-
-  const loadLogs = React.useCallback(async () => {
-    try {
-      const res = await fetch('/api/corpus/logs', { cache: 'no-store' })
-      if (res.ok) {
-        const arr = await res.json()
-        const items = Array.isArray(arr) ? arr as Array[{ ts: number; text: string }] : []
-        setPersistedLogs(items)
-      }
-    } catch {}
-  }, [])
-
-  const refresh = React.useCallback(async () => {
-    const res = await fetch('/api/corpus/state', { cache: 'no-store' })
-    if (res.ok) {
-      const data = await res.json()
-      setState(data)
-      setInitialLoading(false)
-    }
-    await loadLogs()
-  }, [loadLogs])
-
-  useEffect(() => { 
-    refresh()
-  }, [refresh])
-
-  // no-op
-
-  // Clear/refresh logs with graph events
-  useEffect(() => {
-    const onCleared = () => { setPersistedLogs([]); setLiveLogs([]) }
-    const onUpdated = () => { loadLogs() }
-    window.addEventListener('graph-data-cleared', onCleared)
-    window.addEventListener('graph-data-updated', onUpdated)
-    return () => {
-      window.removeEventListener('graph-data-cleared', onCleared)
-      window.removeEventListener('graph-data-updated', onUpdated)
-    }
-  }, [loadLogs])
-
-
-  const onFiles = async (files: FileList | File[]) => {
-    const data = new FormData()
-    // Normalize to an array of Files and only accept PDFs
-    const arrayFiles: File[] = Array.isArray(files)
-      ? (files as File[])
-      : Array.from(files as FileList)
-    const pdfs = arrayFiles.filter(
-      (f) => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf')
-    )
-    if (pdfs.length === 0) return
-    pdfs.forEach((f) => data.append('files', f))
-    setUploading(true)
-    try {
-      const res = await fetch('/api/corpus/upload', { method: 'POST', body: data })
-      if (!res.ok) throw new Error(await res.text())
-      await refresh()
-    } catch (e) {
-      console.warn('upload error', e)
-    } finally {
-      setUploading(false)
-    }
-  }
-
-  const startIndex = async () => {
-    if (running) return
-    setLiveLogs([])
-    setProgress(0)
-    setStatus('Starting...')
-    const es = new EventSource(`/api/corpus/index/stream`)
-    sseRef.current = es
-    setRunning(true)
-    setStartTime(Date.now())
-    es.onmessage = (ev) => {
-      try {
-        const msg = JSON.parse(ev.data)
-        if (msg.type === 'log') setLiveLogs(prev => [...prev, msg.line])
-        if (msg.type === 'status') setStatus(msg.message)
-        if (msg.type === 'progress') setProgress(Math.max(0, Math.min(100, Number(msg.value) || 0)))
-        if (msg.type === 'done') {
-          setRunning(false)
-          es.close()
-          refresh()
-          try {
-            window.dispatchEvent(new Event('graph-data-updated'))
-          } catch {}
-          setStartTime(null)
-        }
-      } catch {}
-    }
-    es.onerror = () => {
-      setRunning(false)
-      es.close()
-    }
-  }
-
-  const stopIndex = async () => {
-    try { await fetch('/api/corpus/index/stop', { method: 'POST' }) } catch {}
-    if (sseRef.current) { sseRef.current.close(); sseRef.current = null }
-    setRunning(false)
-  }
-
-  // Archives management
-  const refreshArchives = async () => {
-    try {
-      const res = await fetch('/api/corpus/archive/list', { cache: 'no-store' })
-      if (res.ok) {
-        const data = await res.json()
-        const arr = Array.isArray(data?.archives) ? (data.archives as Array<{ name?: string; sizeKB?: number }>) : []
-        setArchives(arr.map(a => ({ name: String(a.name || ''), sizeKB: Number(a.sizeKB || 0) })))
-      }
-    } catch {}
-  }
-
-  const archiveCurrent = async () => {
-    try {
-      const res = await fetch('/api/corpus/archive/create', { method: 'POST' })
-      if (res.ok) {
-        await refresh()
-        await refreshArchives()
-        try { window.dispatchEvent(new Event('graph-data-cleared')) } catch {}
-      }
-    } catch {}
-  }
-
-  const restoreArchive = async (name: string) => {
-    try {
-      const res = await fetch('/api/corpus/archive/restore', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) })
-      if (res.ok) {
-        await refresh()
-        await refreshArchives()
-        try { window.dispatchEvent(new Event('graph-data-updated')) } catch {}
-      }
-    } catch {}
-  }
-
-  const renameArchive = async (from: string) => {
-    const to = prompt('Rename archive to:', from)?.trim()
-    if (!to || to === from) return
-    try {
-      const res = await fetch('/api/corpus/archive/rename', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ from, to }) })
-      if (res.ok) await refreshArchives()
-    } catch {}
-  }
-
-  const deleteArchive = async (name: string) => {
-    if (!confirm(`Delete archive "${name}"? This cannot be undone.`)) return
-    try {
-      const res = await fetch('/api/corpus/archive/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) })
-      if (res.ok) await refreshArchives()
-    } catch {}
-  }
-
-  // Track whether user is near bottom (to avoid fighting manual scroll-up)
-  useEffect(() => {
-    const el = logContainerRef.current
-    if (!el) return
-    const onScroll = () => {
-      const nearBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 8
-      setStickToBottom(nearBottom)
-    }
-    el.addEventListener('scroll', onScroll)
-    return () => { el.removeEventListener('scroll', onScroll) }
-  }, [])
-
-  // Auto-scroll to bottom initially and when new logs arrive, only if near bottom
-  useEffect(() => {
-    const el = logContainerRef.current
-    if (!el) return
-    if (stickToBottom) {
-      el.scrollTop = el.scrollHeight
-    }
-  }, [persistedLogs, liveLogs, running, stickToBottom])
-
-  // Simple JSON syntax highlighting
-  const highlightJson = (raw: string) => {
-    const escape = (s: string) => s
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/\"/g, '&quot;')
-      .replace(/'/g, '&#39;')
-
-    const colorize = (s: string) =>
-      s
-        // Keys
-        .replace(/(&quot;[^&]*?&quot;)(\s*:\s*)/g, '<span class="text-yellow-300">$1</span>$2')
-        // Strings
-        .replace(/:&nbsp;?(&quot;[^&]*?&quot;)/g, ': <span class="text-green-300">$1</span>')
-        .replace(/(^|\s)(&quot;[^&]*?&quot;)/g, '$1<span class="text-green-300">$2</span>')
-        // Numbers
-        .replace(/([^\w]|^)(-?\d+(?:\.\d+)?)([^\w]|$)/g, '$1<span class="text-blue-300">$2</span>$3')
-        // Booleans/null
-        .replace(/\b(true|false|null)\b/g, '<span class="text-fuchsia-300">$1</span>')
-
-    try {
-      const obj = JSON.parse(raw)
-      const pretty = JSON.stringify(obj, null, 2)
-      const html = colorize(escape(pretty))
-      return { __html: html }
-    } catch {
-      const trimmed = raw.trim()
-      if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
-        // best effort for near-JSON
-        const html = colorize(escape(trimmed).replace(/\s/g, '&nbsp;'))
-        return { __html: html }
-      }
-      // Rich-ish highlighting for plain text: color level tokens
-      const colorLevels = (sEscaped: string) => sEscaped
-        .replace(/([\]\)\s]|\b)(WARN|WARNING)([\s\[(]|\b)/gi, (_, a, w, b) => `${a}<span class="text-orange-400 font-semibold">${w.toUpperCase()}</span>${b}`)
-        .replace(/\bERROR\b/gi, '<span class="text-red-400 font-semibold">$&</span>')
-        .replace(/\bINFO\b/gi, '<span class="text-blue-300">$&</span>')
-
-      // If the line contains inline JSON after a colon, color only that JSON segment
-      const inline = raw.match(/:\s*([\[{].*)$/)
-      if (inline) {
-        const jsonRaw = inline[1]
-        try {
-          const parsed = JSON.parse(jsonRaw)
-          const pretty = JSON.stringify(parsed, null, 2)
-          const jsonHtml = colorize(escape(pretty))
-          const prefix = raw.slice(0, raw.indexOf(jsonRaw))
-          const coloredPrefix = colorLevels(escape(prefix))
-          return { __html: coloredPrefix + jsonHtml }
-        } catch {
-          // Not valid JSON on this line — fall through to level-only coloring
-        }
-      }
-      // No JSON — just color levels
-      return { __html: colorLevels(escape(raw)) }
-    }
-  }
-
-  return (
-    <div className="w-full h-full flex flex-col">
-      <div className="px-4 py-2 border-b">
-        <div className="flex items-center justify-between mb-2 pb-0">
-          <div>
-            <div className="text-sm font-medium">Corpus</div>
-            <div className="text-xs text-muted-foreground">GraphRAG index management</div>
-            <div className="mt-1 text-xs">
-              <span className="text-muted-foreground">Loaded KG: </span>
-              <span className="font-medium">{state.kgName && state.kgName.trim() ? state.kgName : '(none)'}</span>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="ml-2 h-6 px-2 text-[11px]"
-                onClick={async () => {
-                  const next = prompt('Rename current KG to:', state.kgName || '')?.trim()
-                  if (next === null || next === undefined) return
-                  try {
-                    const res = await fetch('/api/corpus/kg/rename', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: next }) })
-                    if (res.ok) await refresh()
-                  } catch {}
-                }}
-              >Rename</Button>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            {!running ? (
-              <Button size="sm" onClick={startIndex}>
-                <Zap className="h-4 w-4 mr-1" />
-                Run Index
-              </Button>
-            ) : (
-              <Button size="sm" onClick={stopIndex} variant="destructive">Stop</Button>
-            )}
-            <div className="flex items-center">
-              <Button size="sm" variant="outline" onClick={archiveCurrent} title="Archive current KG">
-                <Archive className="h-4 w-4" />
-              </Button>
-              <DropdownMenu open={archivesMenuOpen} onOpenChange={(o) => { setArchivesMenuOpen(o); if (o) refreshArchives() }}>
-                <DropdownMenuTrigger asChild>
-                  <Button size="sm" variant="outline" className="ml-1" title="Manage archives">
-                    <ChevronDown className="h-4 w-4" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-96 p-2">
-                  <div className="flex items-center justify-between px-1 pb-2">
-                    <DropdownMenuLabel className="p-0">Archives</DropdownMenuLabel>
-                    <Button size="icon" variant="ghost" className="h-7 w-7" onClick={(e) => { e.preventDefault(); e.stopPropagation(); refreshArchives() }} title="Refresh list">
-                      <RotateCcw className="h-4 w-4" />
-                    </Button>
-                  </div>
-                  <Button onClick={(e)=>{ e.preventDefault(); archiveCurrent() }} className="w-full mb-2">
-                    <Archive className="h-4 w-4 mr-2" /> Archive current
-                  </Button>
-                  <DropdownMenuSeparator />
-                  {archives.length === 0 ? (
-                    <div className="text-xs text-muted-foreground p-3 text-center">No archives</div>
-                  ) : (
-                    <ScrollArea className="max-h-64">
-                      <div className="space-y-2 pr-2">
-                        {archives.map(a => (
-                          <div key={a.name} className="rounded-md border p-2">
-                            <div className="flex items-center justify-between gap-2">
-                              <div className="min-w-0">
-                                <div className="text-sm font-medium truncate" title={a.kgName || a.name}>{a.kgName || a.name}</div>
-                                <div className="text-[11px] text-muted-foreground">{a.sizeKB.toFixed(1)} KB</div>
-                              </div>
-                              <div className="flex items-center gap-2 shrink-0">
-                                <Button size="sm" onClick={() => restoreArchive(a.name)}>Restore</Button>
-                                <Button size="sm" variant="secondary" onClick={() => renameArchive(a.name)}>Rename</Button>
-                                <Button size="sm" variant="destructive" onClick={() => deleteArchive(a.name)}>Delete</Button>
-                              </div>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </ScrollArea>
-                  )}
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
-          </div>
-        </div>
-        
-        {/* OpenAI-only indexing (settings.yaml) */}
-      </div>
-
-      {(running || persistedLogs.length > 0 || liveLogs.length > 0) && (
-        <div className="p-4 border-b">
-          <div className="flex items-center gap-3">
-            {(() => {
-              const hasIndex = !!state.outputStats && ((state.outputStats.entities ?? 0) + (state.outputStats.relationships ?? 0) + (state.outputStats.communities ?? 0) + (state.outputStats.text_units ?? 0) > 0)
-              const pct = running ? progress : hasIndex ? 100 : 0
-              const elapsed = startTime ? Math.max(0, Math.floor((Date.now() - startTime) / 1000)) : 0
-              const indicatorClass = !running && hasIndex ? 'bg-green-600' : undefined
-              const rootClass = !running && hasIndex ? 'bg-green-600/20' : undefined
-              return (
-                <>
-                  <Progress value={pct} className={`w-full ${rootClass || ''}`} indicatorClassName={indicatorClass} />
-                  <div className="text-xs text-muted-foreground whitespace-nowrap">
-                    {running ? `${pct}% • ${elapsed}s` : hasIndex ? 'Indexed' : 'No index present'}
-                  </div>
-                  {running && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
-                </>
-              )
-            })()}
-          </div>
-        </div>
-      )}
-
-      {/* Indexed overview (full width, polished) */}
-      <div className="p-4 border-b">
-        <Card className="w-full">
-          <CardHeader className="pb-2">
-            <div>
-              <CardTitle className="text-sm">Indexed Overview</CardTitle>
-              <CardDescription className="mt-1 text-xs">
-                {initialLoading ? (
-                  <Skeleton className="h-3 w-32" />
-                ) : state.outputStats?.last_index_time ? (
-                  <>Last indexed: {state.outputStats.last_index_time}</>
-                ) : (
-                  <>Never indexed</>
-                )}
-              </CardDescription>
-            </div>
-          </CardHeader>
-          <CardContent>
-            {initialLoading ? (
-              <div className="grid grid-cols-2 gap-4">
-                {[
-                  'Entities',
-                  'Relationships',
-                  'Communities',
-                  'Text Units',
-                ].map((label, index) => (
-                  <div key={index} className="rounded-md bg-card border p-3 flex items-center gap-3">
-                    <div className="h-8 w-8 rounded-md bg-primary/10 flex items-center justify-center">
-                      <Skeleton className="h-4 w-4 rounded" />
-                    </div>
-                    <div className="min-w-0">
-                      <Skeleton className="h-3 w-20 mb-1" />
-                      <Skeleton className="h-4 w-10" />
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : state.outputStats && ((state.outputStats.entities ?? 0) + (state.outputStats.relationships ?? 0) + (state.outputStats.communities ?? 0) + (state.outputStats.text_units ?? 0) > 0) ? (
-              <div className="grid grid-cols-2 gap-4">
-                <div className="rounded-md bg-card border p-3 flex items-center gap-3">
-                  <div className="h-8 w-8 rounded-md bg-primary/10 text-primary flex items-center justify-center">
-                    <Database className="h-4 w-4" />
-                  </div>
-                  <div className="min-w-0">
-                    <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Entities</div>
-                    <div className="text-base tabular-nums whitespace-nowrap">{state.outputStats.entities ?? 0}</div>
-                  </div>
-                </div>
-                <div className="rounded-md bg-card border p-3 flex items-center gap-3">
-                  <div className="h-8 w-8 rounded-md bg-primary/10 text-primary flex items-center justify-center">
-                    <GitBranch className="h-4 w-4" />
-                  </div>
-                  <div className="min-w-0">
-                    <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Relationships</div>
-                    <div className="text-base tabular-nums whitespace-nowrap">{state.outputStats.relationships ?? 0}</div>
-                  </div>
-                </div>
-                <div className="rounded-md bg-card border p-3 flex items-center gap-3">
-                  <div className="h-8 w-8 rounded-md bg-primary/10 text-primary flex items-center justify-center">
-                    <Users className="h-4 w-4" />
-                  </div>
-                  <div className="min-w-0">
-                    <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Communities</div>
-                    <div className="text-base tabular-nums whitespace-nowrap">{state.outputStats.communities ?? 0}</div>
-                  </div>
-                </div>
-                <div className="rounded-md bg-card border p-3 flex items-center gap-3">
-                  <div className="h-8 w-8 rounded-md bg-primary/10 text-primary flex items-center justify-center">
-                    <Database className="h-4 w-4" />
-                  </div>
-                  <div className="min-w-0">
-                    <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Text Units</div>
-                    <div className="text-base tabular-nums whitespace-nowrap">{state.outputStats.text_units ?? 0}</div>
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <div className="text-xs text-muted-foreground">
-                No index found. Use the Dataset card to add PDFs and click &quot;Run Index&quot; to build the knowledge graph.
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Dataset card (PDF drop zone + table) */}
-      <div className="p-4 border-b">
-        <Card 
-          onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
-          onDragLeave={() => setDragOver(false)}
-          onDrop={(e) => {
-            e.preventDefault();
-            setDragOver(false);
-            const dt = e.dataTransfer;
-            if (dt?.files?.length) {
-              const files = Array.from(dt.files).filter((f) =>
-                f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf')
-              )
-              if (files.length > 0) onFiles(files)
-            }
-          }}
-          className={`${dragOver ? 'ring-2 ring-primary/50' : ''}`}
-        >
-          <CardHeader className="pb-2 flex flex-row items-start justify-between">
-            <div>
-              <CardTitle className="text-sm">Dataset</CardTitle>
-              <CardDescription>Drop PDF files here (.pdf only){uploading && <span className="ml-2">• Uploading…</span>}</CardDescription>
-            </div>
-            <div className="flex items-center gap-2">
-              <Input id="dataset-file-input" type="file" multiple accept=".pdf" className="hidden" onChange={(e) => e.target.files && onFiles(e.target.files)} />
-              <Button size="sm" onClick={() => document.getElementById('dataset-file-input')?.click()}>
-                <Plus className="h-4 w-4 mr-1" /> Add PDFs
-              </Button>
-            </div>
-          </CardHeader>
-          <CardContent>
-            <div className="max-h-56 overflow-y-auto">
-              <FilesDataTable
-                rows={state.uploads.filter((f) => f.type === 'pdf')}
-                onRemove={async (name) => {
-                  try {
-                    await fetch('/api/corpus/remove', {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ name }),
-                    })
-                    refresh()
-                  } catch {}
-                }}
-              />
-              {state.uploads.filter((f) => f.type === 'pdf').length === 0 && (
-                <div className="text-xs text-muted-foreground">No PDFs in input/ yet.</div>
-              )}
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-
-      <div className="flex-1 p-4 min-h-0 flex flex-col">
-        {/* Index logs card (bottom) fills the remaining height */}
-        <Card className="border rounded-md flex-1 min-h-0 flex flex-col">
-          <CardHeader className="py-1.5">
-            <CardTitle className="text-sm font-medium flex items-center gap-2">
-              <Terminal className="h-4 w-4" />
-              Terminal Logs
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="flex-1 min-h-0 p-0 bg-neutral-950 text-neutral-200">
-            <div ref={logContainerRef} className="h-full overflow-auto no-scrollbar">
-              <div className="p-3 text-[11px] font-mono leading-relaxed">
-                {(() => {
-                  const merged = [...persistedLogs.map(e => ({ ts: e.ts, text: e.text })), ...liveLogs.map(l => ({ ts: Date.now(), text: l }))]
-                  if (merged.length === 0) return <div className="text-neutral-500">No logs yet.</div>
-                  return merged.map((e, i) => {
-                    const n = i + 1
-                    const trimmed = e.text.trim()
-                    return (
-                      <div key={`${i}-${e.ts}`} className="grid grid-cols-[48px_1fr] gap-2 whitespace-nowrap">
-                        <span className="text-neutral-500 text-right tabular-nums select-none pr-2">{n}</span>
-                        <span className="text-neutral-200 whitespace-pre" dangerouslySetInnerHTML={highlightJson(trimmed)} />
-                      </div>
-                    )
-                  })
-                })()}
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Archive management handled via split button dropdown above */}
-    </div>
-  )
-}
-
-// Data table for files (shadcn + TanStack)
-type UploadRow = {
+type Upload = {
   name: string
   size: number
   mtime: number
@@ -580,142 +14,589 @@ type UploadRow = {
   status?: string
 }
 
-function formatKB(bytes: number) {
-  return `${(bytes / 1024).toFixed(1)} KB`
+type CorpusState = {
+  uploads: Upload[]
+  outputStats?: {
+    entities?: number
+    relationships?: number
+    communities?: number
+    text_units?: number
+    last_index_time?: string
+  }
+  queue: { name: string; status: 'pending' | 'processing' | 'done' | 'error'; message?: string }[]
+  kgName?: string
 }
 
-function StatusBadge({ status }: { status?: string }) {
-  const s = (status || 'pending') as string
-  if (s === 'indexed' || s === 'ready') {
-    return <Badge className="text-[10px] bg-green-600 text-white border-transparent">indexed</Badge>
-  }
-  if (s === 'scanning') {
-    return <Badge className="text-[10px] border-orange-500 text-orange-400" variant="outline">scanning</Badge>
-  }
-  if (s === 'removed') {
-    return <Badge className="text-[10px]" variant="destructive">removed</Badge>
-  }
-  return <Badge className="text-[10px] border-amber-500 text-amber-500" variant="outline">requires indexing</Badge>
-}
+type ArchiveEntry = { name: string; kgName?: string; sizeKB: number }
 
-function FilesDataTable({
-  rows,
-  onRemove,
-}: {
-  rows: UploadRow[]
-  onRemove: (name: string) => Promise<void>
-}) {
-  const columns = React.useMemo<ColumnDef<UploadRow, unknown>[]>(
-    () => [
-      {
-        accessorKey: 'name',
-        header: ({ column }) => (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="px-0"
-            onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
-          >
-            File
-            <ArrowUpDown className="ml-1 h-3 w-3" />
-          </Button>
-        ),
-        cell: ({ row }) => (
-          <a
-            className="hover:underline"
-            href={`/api/corpus/file?name=${encodeURIComponent(row.original.name)}`}
-            target="_blank"
-            rel="noreferrer"
-          >
-            {row.original.name}
-          </a>
-        ),
-        sortingFn: 'alphanumeric',
-      },
-      {
-        accessorKey: 'size',
-        header: ({ column }) => (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="px-0"
-            onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
-          >
-            Size
-            <ArrowUpDown className="ml-1 h-3 w-3" />
-          </Button>
-        ),
-        cell: ({ row }) => <span className="text-muted-foreground">{formatKB(row.original.size)}</span>,
-        sortingFn: 'basic',
-      },
-      {
-        accessorKey: 'status',
-        header: 'Status',
-        cell: ({ row }) => <StatusBadge status={row.original.status} />,
-      },
-      {
-        id: 'actions',
-        header: '',
-        cell: ({ row }) => (
-          <Button
-            size="icon"
-            variant="outline"
-            className="h-6 w-6"
-            title="Remove from dataset"
-            onClick={() => onRemove(row.original.name)}
-          >
-            <Trash2 className="h-3 w-3" />
-          </Button>
-        ),
-      },
-    ],
-    [onRemove]
-  )
+const formatSize = (bytes: number) => `${(bytes / 1024).toFixed(1)} KB`
+const formatUploadStatus = (status?: string) => status === 'pending_removal' ? 'remove after build' : (status || 'pending').replaceAll('_', ' ')
+const formatElapsed = (seconds: number) => `${Math.floor(seconds / 60).toString().padStart(2, '0')}:${(seconds % 60).toString().padStart(2, '0')}`
 
-  const [sorting, setSorting] = React.useState<SortingState>([])
-  const table = useReactTable({
-    data: rows,
-    columns,
-    state: { sorting },
-    onSortingChange: setSorting,
-    getCoreRowModel: getCoreRowModel(),
-    getSortedRowModel: getSortedRowModel(),
-  })
+export default function CorpusPanel({ onProjectNamed, onProjectDeleted }: { onProjectNamed?: (name: string) => void; onProjectDeleted?: () => void }) {
+  const [state, setState] = useState<CorpusState>({ uploads: [], queue: [] })
+  const [archives, setArchives] = useState<ArchiveEntry[]>([])
+  const [persistedLogs, setPersistedLogs] = useState<{ ts: number; text: string }[]>([])
+  const [liveLogs, setLiveLogs] = useState<string[]>([])
+  const [running, setRunning] = useState(false)
+  const [runStatus, setRunStatus] = useState<'idle' | 'running' | 'failed' | 'succeeded'>('idle')
+  const [stopping, setStopping] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const [importing, setImporting] = useState(false)
+  const [importError, setImportError] = useState<string | null>(null)
+  const [dragOver, setDragOver] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [startTime, setStartTime] = useState<number | null>(null)
+  const [elapsed, setElapsed] = useState(0)
+  const [currentNameDraft, setCurrentNameDraft] = useState('')
+  const [editingCurrentName, setEditingCurrentName] = useState(false)
+  const [newProjectName, setNewProjectName] = useState('')
+  const [creatingProject, setCreatingProject] = useState(false)
+  const [editingArchive, setEditingArchive] = useState<string | null>(null)
+  const [archiveNameDraft, setArchiveNameDraft] = useState('')
+  const [pendingDelete, setPendingDelete] = useState<string | null>(null)
+  const [pendingCurrentDelete, setPendingCurrentDelete] = useState(false)
+  const [progress, setProgress] = useState(0)
+  const [providerStatus, setProviderStatus] = useState<ProviderStatus | null>(null)
+  const [providerSetupOpen, setProviderSetupOpen] = useState(false)
+  const [providerSetupTab, setProviderSetupTab] = useState<'local' | 'cloud'>('local')
+  const [activeBuildProvider, setActiveBuildProvider] = useState<'local' | 'cloud' | null>(null)
+  const [jobProjectName, setJobProjectName] = useState<string | null>(null)
+  const [anyJobRunning, setAnyJobRunning] = useState(false)
+  const [jobModel, setJobModel] = useState<string | null>(null)
+  const sseRef = useRef<EventSource | null>(null)
+  const logContainerRef = useRef<HTMLDivElement | null>(null)
+  const importInputRef = useRef<HTMLInputElement | null>(null)
+  const bundleInputRef = useRef<HTMLInputElement | null>(null)
+  const wasAnyJobRunningRef = useRef(false)
+
+  const loadLogs = useCallback(async () => {
+    try {
+      const response = await fetch('/api/corpus/logs', { cache: 'no-store' })
+      if (!response.ok) return
+      const data = await response.json()
+      setPersistedLogs(Array.isArray(data) ? data : [])
+    } catch {}
+  }, [])
+
+  const refreshArchives = useCallback(async () => {
+    try {
+      const response = await fetch('/api/corpus/archive/list', { cache: 'no-store' })
+      if (!response.ok) return
+      const data = await response.json()
+      const entries = Array.isArray(data?.archives) ? data.archives : []
+      setArchives(entries.map((entry: ArchiveEntry) => ({
+        name: String(entry.name || ''),
+        kgName: entry.kgName ? String(entry.kgName) : undefined,
+        sizeKB: Number(entry.sizeKB || 0),
+      })))
+    } catch {}
+  }, [])
+
+  const refresh = useCallback(async () => {
+    try {
+      const response = await fetch('/api/corpus/state', { cache: 'no-store' })
+      if (response.ok) setState(await response.json())
+    } finally {
+      setLoading(false)
+    }
+    await Promise.all([loadLogs(), refreshArchives()])
+  }, [loadLogs, refreshArchives])
+
+  useEffect(() => { refresh() }, [refresh])
+
+  const refreshProviders = useCallback(async () => {
+    try {
+      const response = await fetch('/api/providers', { cache: 'no-store' })
+      if (response.ok) setProviderStatus(await response.json())
+    } catch {}
+  }, [])
+
+  useEffect(() => { void refreshProviders() }, [refreshProviders])
+
+  useEffect(() => {
+    importInputRef.current?.setAttribute('webkitdirectory', '')
+    importInputRef.current?.setAttribute('directory', '')
+  }, [])
+
+  // The index job is server-owned and survives this panel unmounting, so the
+  // panel resynchronizes against /status: reattach to a running build, and
+  // pick up the terminal outcome of a build that finished while closed.
+  useEffect(() => {
+    let cancelled = false
+    const syncJob = async () => {
+      try {
+        const response = await fetch('/api/corpus/index/status', { cache: 'no-store' })
+        if (!response.ok || cancelled) return
+        const job = await response.json() as { running?: boolean; status?: string; startedAt?: number | null; progress?: number; buildProvider?: 'local' | 'cloud' | null; projectName?: string | null; completionModel?: string | null }
+        const isRunning = job.running === true
+        const selectedProjectIsRunning = isRunning && job.projectName === state.kgName
+        setAnyJobRunning(isRunning)
+        setJobProjectName(job.projectName ?? null)
+        setJobModel(job.completionModel ?? null)
+        setRunning(selectedProjectIsRunning)
+        setActiveBuildProvider(job.buildProvider ?? null)
+        if (typeof job.progress === 'number') setProgress(job.progress)
+        if (selectedProjectIsRunning) {
+          setRunStatus('running')
+          if (job.startedAt) setStartTime(job.startedAt)
+          await loadLogs()
+        } else {
+          if (wasAnyJobRunningRef.current) {
+            setStartTime(null)
+            await Promise.all([loadLogs(), refresh()])
+            if (job.status === 'succeeded' && job.projectName === state.kgName) notifyGraph('graph-data-updated')
+          }
+          if (job.projectName === state.kgName) {
+            setRunStatus(job.status === 'succeeded' ? 'succeeded' : job.status === 'failed' ? 'failed' : 'idle')
+          }
+        }
+        wasAnyJobRunningRef.current = isRunning
+      } catch {}
+    }
+    syncJob()
+    const timer = window.setInterval(syncJob, 1000)
+    return () => { cancelled = true; window.clearInterval(timer) }
+  }, [loadLogs, refresh, state.kgName])
+
+  useEffect(() => {
+    setCurrentNameDraft(state.kgName || '')
+    if (!loading && !state.kgName?.trim()) setEditingCurrentName(true)
+  }, [loading, state.kgName])
+
+  useEffect(() => {
+    if (!running || !startTime) return
+    const timer = window.setInterval(() => setElapsed(Math.floor((Date.now() - startTime) / 1000)), 1000)
+    return () => window.clearInterval(timer)
+  }, [running, startTime])
+
+  useEffect(() => {
+    const element = logContainerRef.current
+    if (element) element.scrollTop = element.scrollHeight
+  }, [persistedLogs, liveLogs])
+
+  const notifyGraph = (event: 'graph-data-updated' | 'graph-data-cleared') => {
+    window.dispatchEvent(new Event(event))
+  }
+
+  const saveCurrentName = async () => {
+    const next = currentNameDraft.trim()
+    if (!next || next === state.kgName) return
+    const response = await fetch('/api/corpus/kg/rename', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: next }),
+    })
+    if (response.ok) {
+      setEditingCurrentName(false)
+      await refresh()
+      onProjectNamed?.(next)
+    }
+  }
+
+  const newProject = async () => {
+    const name = newProjectName.trim()
+    if (!name) return
+    const response = await fetch('/api/corpus/archive/create', { method: 'POST' })
+    if (!response.ok) return
+    await fetch('/api/corpus/kg/rename', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    })
+    setLiveLogs([])
+    setRunStatus('idle')
+    notifyGraph('graph-data-cleared')
+    setNewProjectName('')
+    setCreatingProject(false)
+    await refresh()
+    onProjectNamed?.(name)
+  }
+
+  const restoreArchive = async (name: string) => {
+    sseRef.current?.close()
+    sseRef.current = null
+    const response = await fetch('/api/corpus/archive/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    })
+    if (!response.ok) return
+    // The restored project brings its own terminal history; drop this one's.
+    setLiveLogs([])
+    setRunStatus('idle')
+    const restored = archives.find(project => project.name === name)
+    onProjectNamed?.(restored?.kgName || name)
+    await refresh()
+    notifyGraph('graph-data-updated')
+  }
+
+  const renameArchive = async (from: string) => {
+    const to = archiveNameDraft.trim()
+    if (!to || to === from) return
+    const response = await fetch('/api/corpus/archive/rename', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from, to }),
+    })
+    if (response.ok) {
+      setEditingArchive(null)
+      setArchiveNameDraft('')
+      await refreshArchives()
+    }
+  }
+
+  const deleteArchive = async (name: string) => {
+    const response = await fetch('/api/corpus/archive/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    })
+    if (response.ok) {
+      setPendingDelete(null)
+      await refreshArchives()
+    }
+  }
+
+  const deleteCurrentProject = async () => {
+    const response = await fetch('/api/corpus/project/delete', { method: 'POST' })
+    if (!response.ok) return
+    setPendingCurrentDelete(false)
+    setLiveLogs([])
+    notifyGraph('graph-data-cleared')
+    await refresh()
+    onProjectDeleted?.()
+  }
+
+  const uploadFiles = async (files: FileList | File[]) => {
+    const pdfs = Array.from(files).filter(file => file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf'))
+    if (!pdfs.length) return
+    const body = new FormData()
+    pdfs.forEach(file => body.append('files', file))
+    setUploading(true)
+    try {
+      const response = await fetch('/api/corpus/upload', { method: 'POST', body })
+      if (response.ok) await refresh()
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  const removeFile = async (name: string) => {
+    const response = await fetch('/api/corpus/remove', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    })
+    if (response.ok) await refresh()
+  }
+
+  const importOutput = async (selection: FileList | null) => {
+    const files = selection ? Array.from(selection) : []
+    if (!files.length || importing) return
+    const body = new FormData()
+    files.forEach(file => body.append('files', file, file.webkitRelativePath || file.name))
+    setImporting(true)
+    setImportError(null)
+    try {
+      const response = await fetch('/api/corpus/import', { method: 'POST', body })
+      const result = await response.json().catch(() => ({})) as { error?: string }
+      if (!response.ok) {
+        setImportError(result.error || 'Output import failed.')
+        return
+      }
+      setLiveLogs([])
+      await refresh()
+      notifyGraph('graph-data-updated')
+    } catch {
+      setImportError('Output import failed.')
+    } finally {
+      setImporting(false)
+      if (importInputRef.current) importInputRef.current.value = ''
+      if (bundleInputRef.current) bundleInputRef.current.value = ''
+    }
+  }
+
+  const startIndex = (provider: 'local' | 'cloud') => {
+    if (anyJobRunning) return
+    if (!providerStatus?.[provider].ready) {
+      setProviderSetupTab(provider)
+      setProviderSetupOpen(true)
+      return
+    }
+    setPersistedLogs([])
+    setLiveLogs([])
+    setElapsed(0)
+    setProgress(0)
+    setStartTime(Date.now())
+    setRunning(true)
+    setRunStatus('running')
+    setActiveBuildProvider(provider)
+    setJobProjectName(state.kgName || null)
+    setAnyJobRunning(true)
+    const source = new EventSource(`/api/corpus/index/stream?provider=${provider}`)
+    sseRef.current = source
+    source.onmessage = event => {
+      try {
+        const message = JSON.parse(event.data)
+        if (message.type === 'log') setLiveLogs(previous => [...previous, message.line])
+        if (message.type === 'progress' && typeof message.value === 'number') setProgress(message.value)
+        // Builds run in an isolated workspace. The selected graph updates only
+        // after the complete artifact set is published back to its
+        // originating project.
+        if (message.type === 'done') {
+          setAnyJobRunning(false)
+          setRunning(false)
+          setRunStatus(message.ok === true ? 'succeeded' : 'failed')
+          setStartTime(null)
+          source.close()
+          refresh()
+          if (message.ok === true) notifyGraph('graph-data-updated')
+        }
+      } catch {}
+    }
+    source.onerror = () => {
+      source.close()
+    }
+  }
+
+  const stopIndex = async () => {
+    if (stopping) return
+    setStopping(true)
+    try {
+      const response = await fetch('/api/corpus/index/stop', { method: 'POST' })
+      if (!response.ok) return
+      sseRef.current?.close()
+      sseRef.current = null
+      setRunning(false)
+      setAnyJobRunning(false)
+      setRunStatus('idle')
+      setStartTime(null)
+      await loadLogs()
+    } finally {
+      setStopping(false)
+    }
+  }
+
+  const stats = state.outputStats
+  const files = state.uploads.filter(file => file.type === 'pdf')
+  const mergedLogs = React.useMemo(() => {
+    const persistedText = new Set(persistedLogs.map(entry => entry.text.trim()))
+    return [
+      ...persistedLogs.map(entry => ({ ts: entry.ts, text: entry.text })),
+      ...liveLogs.filter(text => !persistedText.has(text.trim())).map((text, index) => ({ ts: Date.now() + index, text })),
+    ]
+  }, [liveLogs, persistedLogs])
+  const terminalLines = React.useMemo(() => {
+    const lines = mergedLogs
+      .flatMap(entry => entry.text.split(/[\r\n]+/).filter(Boolean).map(text => ({ ts: entry.ts, text: text.trim() })))
+      .filter(line => !/^\d+\s*\/\s*\d+(?:\s+\.*)?$/.test(line.text))
+    const completed = new Set(lines.map(line => line.text.match(/Workflow complete:\s*(.+)/i)?.[1]?.trim()).filter(Boolean) as string[])
+    const failed = lines.some(line => /Pipeline error:|completed with errors/i.test(line.text)) || runStatus === 'failed'
+    const lastLine = lines.length - 1
+    return lines.map((line, index) => {
+      const starting = line.text.match(/Starting workflow:\s*(.+)/i)?.[1]?.trim()
+      const complete = line.text.match(/Workflow complete:\s*(.+)/i)?.[1]?.trim()
+      const isError = /Pipeline error:|completed with errors|INGEST BLOCKED|INGEST STOPPED/i.test(line.text)
+      const state: 'active' | 'success' | 'error' | undefined = isError
+        ? 'error'
+        : complete || (starting && completed.has(starting))
+          ? 'success'
+          : starting && failed
+            ? 'error'
+            : starting || (running && index === lastLine)
+              ? 'active'
+              : undefined
+      const kind = isError || /ENGINE ERROR|FATAL|PUBLISH FAILED/i.test(line.text)
+        ? 'error'
+        : /warning/i.test(line.text)
+          ? 'warning'
+          : complete || /PUBLISHED ·|Pipeline complete|Converted \d+ parquet/i.test(line.text)
+            ? 'success'
+            : starting
+              ? 'workflow'
+              : /BUILD ·|Starting pipeline|LIVE VIEW ·|PENDING REMOVAL/i.test(line.text)
+                ? 'system'
+                : 'output'
+      return { ...line, state, kind }
+    })
+  }, [mergedLogs, runStatus, running])
+
+  const hasName = Boolean(state.kgName?.trim())
 
   return (
-    <Table>
-      <TableHeader>
-        {table.getHeaderGroups().map((headerGroup) => (
-          <TableRow key={headerGroup.id}>
-            {headerGroup.headers.map((header) => (
-              <TableHead key={header.id}>
-                {header.isPlaceholder
-                  ? null
-                  : flexRender(header.column.columnDef.header, header.getContext())}
-              </TableHead>
-            ))}
-          </TableRow>
-        ))}
-      </TableHeader>
-      <TableBody>
-        {table.getRowModel().rows?.length ? (
-          table.getRowModel().rows.map((row) => (
-            <TableRow key={row.id} data-state={row.getIsSelected() && 'selected'}>
-              {row.getVisibleCells().map((cell) => (
-                <TableCell key={cell.id}>
-                  {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                </TableCell>
-              ))}
-            </TableRow>
-          ))
-        ) : (
-          <TableRow>
-            <TableCell colSpan={columns.length} className="h-24 text-center text-xs text-muted-foreground">
-              No results.
-            </TableCell>
-          </TableRow>
+    <div className="grid h-full min-h-0 grid-cols-[220px_minmax(0,1fr)] grid-rows-[minmax(0,1fr)_minmax(180px,0.55fr)] bg-[#05080b]/72 text-[12px] backdrop-blur-2xl">
+      <nav className="row-start-1 flex min-h-0 flex-col border-r border-white/12 bg-black/20" aria-label="Projects">
+        <div className="flex h-12 shrink-0 items-center justify-between border-b px-3">
+          <div className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+            <FolderOpen className="h-3.5 w-3.5" /> Projects
+          </div>
+          <Button variant="ghost" size="icon" className="h-8 w-8 rounded-none" onClick={() => setCreatingProject(true)} title="Create project">
+            <Plus className="h-3.5 w-3.5" />
+          </Button>
+        </div>
+
+        {creatingProject && (
+          <form className="border-b p-2" onSubmit={event => { event.preventDefault(); newProject() }}>
+            <Input autoFocus value={newProjectName} onChange={event => setNewProjectName(event.target.value)} placeholder="Project name" className="h-8 rounded-none text-[11px]" />
+            <div className="mt-1 flex justify-end gap-1">
+              <Button type="button" variant="ghost" size="sm" className="h-7 rounded-none text-[10px]" onClick={() => { setCreatingProject(false); setNewProjectName('') }}>Cancel</Button>
+              <Button type="submit" size="sm" className="h-7 rounded-none text-[10px]" disabled={!newProjectName.trim()}>Create</Button>
+            </div>
+          </form>
         )}
-      </TableBody>
-    </Table>
+
+        <div className="min-h-0 flex-1 overflow-auto" data-hmi-scroll>
+          {hasName && (
+            <div className="flex h-12 flex-col justify-center border-b border-l-2 border-l-primary bg-white/[0.035] px-3">
+              <div className="flex items-center gap-2">
+                {anyJobRunning && jobProjectName === state.kgName && <Loader2 className="h-3 w-3 shrink-0 animate-spin text-primary" aria-label="Build running" />}
+                <div className="truncate text-[11px] font-medium">{state.kgName}</div>
+              </div>
+              <div className="mt-0.5 font-mono text-[8px] uppercase tracking-[0.08em] text-muted-foreground">{anyJobRunning && jobProjectName === state.kgName ? `Building · ${progress}%` : 'Active · local'}</div>
+            </div>
+          )}
+          {archives.map(project => {
+            const isEditing = editingArchive === project.name
+            const isDeleting = pendingDelete === project.name
+            const isBuilding = anyJobRunning && jobProjectName === (project.kgName || project.name)
+            return (
+              <div key={project.name} className="border-b px-3 py-2">
+                {isEditing ? (
+                  <form className="flex gap-1" onSubmit={event => { event.preventDefault(); renameArchive(project.name) }}>
+                    <Input autoFocus value={archiveNameDraft} onChange={event => setArchiveNameDraft(event.target.value)} className="h-7 min-w-0 rounded-none text-[10px]" />
+                    <Button type="submit" variant="ghost" size="icon" className="h-7 w-7 rounded-none" aria-label="Save name"><Check className="h-3 w-3" /></Button>
+                    <Button type="button" variant="ghost" size="icon" className="h-7 w-7 rounded-none" onClick={() => setEditingArchive(null)} aria-label="Cancel"><X className="h-3 w-3" /></Button>
+                  </form>
+                ) : (
+                  <>
+                    <button className="flex w-full items-center gap-2 text-left text-[11px] hover:underline" onClick={() => restoreArchive(project.name)}>
+                      {isBuilding && <Loader2 className="h-3 w-3 shrink-0 animate-spin text-primary" aria-label="Build running" />}
+                      <span className="truncate">{project.kgName || project.name}</span>
+                    </button>
+                    <div className="mt-1 flex items-center justify-between">
+                      <span className="font-mono text-[8px] uppercase text-muted-foreground">{isBuilding ? `Building · ${progress}%` : `${project.sizeKB.toFixed(1)} KB`}</span>
+                      <div className="flex">
+                        <Button variant="ghost" size="icon" className="h-6 w-6 rounded-none" disabled={isBuilding} onClick={() => { setEditingArchive(project.name); setArchiveNameDraft(project.kgName || project.name) }} title={isBuilding ? 'Stop the build before renaming' : 'Rename'}><Pencil className="h-3 w-3" /></Button>
+                        {isDeleting ? (
+                          <Button variant="destructive" size="sm" className="h-6 rounded-none px-2 text-[9px]" onClick={() => deleteArchive(project.name)}>Confirm</Button>
+                        ) : (
+                          <Button variant="ghost" size="icon" className="h-6 w-6 rounded-none" disabled={isBuilding} onClick={() => setPendingDelete(project.name)} title={isBuilding ? 'Stop the build before deleting' : 'Delete'}><Trash2 className="h-3 w-3" /></Button>
+                        )}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            )
+          })}
+          {!archives.length && hasName && <div className="px-3 py-3 text-[10px] text-muted-foreground">No other projects.</div>}
+        </div>
+      </nav>
+
+      <main className="relative row-start-1 flex min-h-0 min-w-0 flex-col bg-[#05080b]/38 backdrop-blur-xl">
+        {!hasName ? (
+          <div className="flex h-full items-center justify-center p-8">
+            <form className="w-full max-w-sm border-y border-white/12 py-6" onSubmit={event => { event.preventDefault(); saveCurrentName() }}>
+              <div className="font-mono text-[9px] uppercase tracking-[0.12em] text-primary">Project identity required</div>
+              <h2 className="mt-2 text-[16px] font-medium">Name this project</h2>
+              <p className="mt-1 text-[11px] leading-5 text-muted-foreground">Use a human-readable name. It identifies this graph in the local project switcher and archive.</p>
+              <Input autoFocus value={currentNameDraft} onChange={event => setCurrentNameDraft(event.target.value)} placeholder="e.g. Offshore autonomy research" className="mt-4 h-9 rounded-none" />
+              <Button type="submit" className="mt-2 h-9 w-full rounded-none text-[11px]" disabled={!currentNameDraft.trim()}>Continue</Button>
+            </form>
+          </div>
+        ) : (
+          <>
+            <header className="flex h-12 shrink-0 items-center justify-between border-b pl-4 pr-12">
+              {editingCurrentName ? (
+                <form className="flex min-w-0 flex-1 items-center gap-1 pr-4" onSubmit={event => { event.preventDefault(); saveCurrentName() }}>
+                  <Input autoFocus value={currentNameDraft} onChange={event => setCurrentNameDraft(event.target.value)} className="h-8 max-w-sm rounded-none text-[12px]" />
+                  <Button type="submit" variant="ghost" size="icon" className="h-8 w-8 rounded-none" aria-label="Save name"><Check className="h-3.5 w-3.5" /></Button>
+                  <Button type="button" variant="ghost" size="icon" className="h-8 w-8 rounded-none" onClick={() => { setEditingCurrentName(false); setCurrentNameDraft(state.kgName || '') }} aria-label="Cancel"><X className="h-3.5 w-3.5" /></Button>
+                </form>
+              ) : (
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2"><span className="truncate text-[13px] font-medium">{state.kgName}</span><Button variant="ghost" size="icon" className="h-6 w-6 rounded-none" disabled={running} onClick={() => setEditingCurrentName(true)} title={running ? 'Stop the build before renaming' : 'Rename'}><Pencil className="h-3 w-3" /></Button></div>
+                  <div className="font-mono text-[9px] uppercase tracking-[0.1em] text-muted-foreground">{running ? `Indexing · ${elapsed}s` : stats ? 'Indexed · local' : 'Not indexed · local'}</div>
+                </div>
+              )}
+              <div className="flex items-center gap-1">
+                <Button variant="ghost" size="icon" className="h-8 w-8 rounded-none" onClick={refresh} title="Refresh"><RotateCcw className="h-3.5 w-3.5" /></Button>
+                {pendingCurrentDelete ? (
+                  <div className="flex items-center gap-1">
+                    <Button variant="ghost" size="sm" className="h-8 rounded-none text-[9px]" onClick={() => setPendingCurrentDelete(false)}>Cancel</Button>
+                    <Button variant="destructive" size="sm" className="h-8 rounded-none text-[9px]" onClick={deleteCurrentProject}>Delete project</Button>
+                  </div>
+                ) : (
+                  <Button variant="ghost" size="icon" className="h-8 w-8 rounded-none" onClick={() => setPendingCurrentDelete(true)} title="Delete active project"><Trash2 className="h-3.5 w-3.5" /></Button>
+                )}
+                <Button variant="ghost" size="icon" className="h-8 w-8 rounded-none" onClick={() => setProviderSetupOpen(true)} title="Configure build providers"><Settings2 className="h-3.5 w-3.5" /></Button>
+                {running ? (
+                  <Button variant="destructive" size="sm" className="h-8 rounded-none text-[10px]" onClick={stopIndex} disabled={stopping}>{stopping ? <Loader2 className="h-3 w-3 animate-spin" /> : <Square className="h-3 w-3" />} {stopping ? 'Stopping' : `Stop ${activeBuildProvider || ''}`}</Button>
+                ) : anyJobRunning ? (
+                  <div className="flex h-8 max-w-[230px] items-center gap-2 border border-white/10 px-3 font-mono text-[8px] uppercase tracking-[0.08em] text-muted-foreground" title={`Build continues for ${jobProjectName || 'another project'}`}>
+                    <Loader2 className="h-3 w-3 shrink-0 animate-spin text-primary" />
+                    <span className="truncate">Background · {jobProjectName}</span>
+                  </div>
+                ) : (
+                  <>
+                    <Button variant="outline" size="sm" className="h-8 rounded-none text-[10px]" onClick={() => startIndex('local')} disabled={!files.length}><HardDrive className="h-3 w-3" /> Run with Ollama</Button>
+                    <Button size="sm" className="h-8 rounded-none text-[10px]" onClick={() => startIndex('cloud')} disabled={!files.length}><Cloud className="h-3 w-3" /> Run with OpenAI</Button>
+                  </>
+                )}
+              </div>
+            </header>
+
+            <section className="grid h-12 shrink-0 grid-cols-4 border-b" aria-label="Project statistics">
+              {[["Entities", stats?.entities ?? 0], ["Relations", stats?.relationships ?? 0], ["Communities", stats?.communities ?? 0], ["Text units", stats?.text_units ?? 0]].map(([label, value]) => (
+                <div key={label} className="flex flex-col justify-center border-r px-3 last:border-r-0"><div className="font-mono text-[8px] uppercase tracking-[0.1em] text-muted-foreground">{label}</div><div className="mt-0.5 font-mono text-[12px] tabular-nums">{loading ? '—' : value}</div></div>
+              ))}
+            </section>
+
+            <section className={`min-h-0 flex-1 border-b ${dragOver ? 'bg-white/5' : ''}`} onDragOver={event => { event.preventDefault(); setDragOver(true) }} onDragLeave={() => setDragOver(false)} onDrop={event => { event.preventDefault(); setDragOver(false); if (event.dataTransfer.files.length) uploadFiles(event.dataTransfer.files) }}>
+                <div className="flex h-9 min-w-0 items-center justify-between gap-2 overflow-hidden border-b px-3">
+                  <span className={`min-w-0 truncate font-mono text-[9px] uppercase tracking-[0.1em] ${importError ? 'text-red-400' : 'text-muted-foreground'}`}>{importError || `Source files · ${files.length}`}</span>
+                  <div className="flex shrink-0 items-center">
+                    <Input ref={importInputRef} type="file" multiple accept=".json,.parquet" className="hidden" onChange={event => void importOutput(event.target.files)} />
+                    <Input ref={bundleInputRef} type="file" accept=".json,.graphrag.json" className="hidden" onChange={event => void importOutput(event.target.files)} />
+                    <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0 rounded-none" disabled={running || importing} onClick={() => importInputRef.current?.click()} title="Import a GraphRAG output directory">{importing ? <Loader2 className="h-3 w-3 animate-spin" /> : <FolderInput className="h-3 w-3" />}</Button>
+                    <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0 rounded-none" disabled={running || importing} onClick={() => bundleInputRef.current?.click()} title="Import a GraphRAG Workbench bundle"><FileInput className="h-3 w-3" /></Button>
+                    <Button asChild variant="ghost" size="icon" className="h-7 w-7 shrink-0 rounded-none" title="Export this project's graph output"><a href="/api/corpus/export" download><Download className="h-3 w-3" /><span className="sr-only">Export output</span></a></Button>
+                    <Input id="project-file-input" type="file" multiple accept=".pdf" className="hidden" onChange={event => event.target.files && uploadFiles(event.target.files)} />
+                    <Button variant="ghost" size="sm" className="h-7 shrink-0 whitespace-nowrap rounded-none px-2 text-[10px]" onClick={() => document.getElementById('project-file-input')?.click()}>{uploading ? <Loader2 className="h-3 w-3 animate-spin" /> : <FilePlus className="h-3 w-3" />} Add PDFs</Button>
+                  </div>
+                </div>
+                <div className="h-[calc(100%-2.25rem)] overflow-auto" data-hmi-scroll>
+                  {!files.length ? <button className="flex h-full w-full items-center justify-center text-[10px] text-muted-foreground" onClick={() => document.getElementById('project-file-input')?.click()}>Drop PDFs here or choose files</button> : files.map(file => <div key={file.name} className="grid min-h-9 grid-cols-[minmax(0,1fr)_72px_112px_32px] items-center border-b px-4 text-[10px]"><a className="truncate hover:underline" href={`/api/corpus/file?name=${encodeURIComponent(file.name)}`} target="_blank" rel="noreferrer">{file.name}</a><span className="text-right font-mono text-[9px] text-muted-foreground">{formatSize(file.size)}</span><span className="text-right font-mono text-[8px] uppercase text-muted-foreground">{formatUploadStatus(file.status)}</span><Button variant="ghost" size="icon" className="h-7 w-7 rounded-none" disabled={file.status === 'pending_removal'} onClick={() => removeFile(file.name)} title={file.status === 'pending_removal' ? 'Removal scheduled for next successful build' : `Remove ${file.name}`}><Trash2 className="h-3 w-3" /></Button></div>)}
+                </div>
+            </section>
+          </>
+        )}
+      </main>
+      {hasName && (
+        <section className="col-span-2 row-start-2 flex min-h-0 min-w-0 flex-col border-t border-white/10 bg-[#030506]/88 text-neutral-200">
+          <div className="shrink-0 border-b border-white/10 bg-white/[0.018]">
+            <div className="flex h-9 min-w-0 items-center justify-between gap-4 px-3">
+              <span className="flex min-w-0 items-center gap-2 font-mono text-[9px] uppercase tracking-[0.12em] text-neutral-300"><Terminal className="h-3 w-3 shrink-0 text-primary" /> Build log <span className="truncate text-[8px] text-neutral-600">{state.kgName}</span></span>
+              <div className="flex min-w-0 items-center gap-3 font-mono text-[8px] uppercase tracking-[0.08em] text-neutral-500">
+                {running && <span className="max-w-48 truncate">{activeBuildProvider} · {jobModel}</span>}
+                <span className={`shrink-0 tabular-nums ${runStatus === 'failed' ? 'text-red-400' : runStatus === 'succeeded' ? 'text-green-400' : running ? 'text-primary' : ''}`}>{running ? `${formatElapsed(elapsed)} · ${progress}%` : runStatus}</span>
+              </div>
+            </div>
+            <div className="h-px bg-white/[0.04]" aria-hidden><div className="h-full bg-primary transition-[width] duration-300" style={{ width: `${running || runStatus === 'succeeded' ? progress : 0}%` }} /></div>
+          </div>
+          <div ref={logContainerRef} className="min-h-0 flex-1 overflow-auto py-1 font-mono text-[9px] leading-4" data-hmi-scroll aria-label="Build process output">
+            {!terminalLines.length ? <div className="px-4 py-4 text-neutral-600">No build output for this project.</div> : terminalLines.map((entry, index) => (
+              <div key={`${entry.ts}-${index}`} className={`grid min-w-0 grid-cols-[54px_18px_minmax(0,1fr)] gap-1 px-3 py-1 ${entry.kind === 'error' ? 'bg-red-500/[0.07] text-red-300' : entry.kind === 'warning' ? 'bg-amber-400/[0.04] text-amber-200/80' : entry.kind === 'success' ? 'text-emerald-300/90' : entry.kind === 'workflow' ? 'text-neutral-100' : entry.kind === 'system' ? 'text-[#9fb9cc]' : 'text-neutral-400'}`}>
+                <time className="select-none whitespace-nowrap tabular-nums text-neutral-700">{new Date(entry.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' })}</time>
+                <span className="flex items-start justify-center pt-0.5">{entry.state === 'active' ? <Loader2 className="h-3 w-3 animate-spin text-primary" /> : entry.state === 'success' ? <Check className="h-3 w-3 text-emerald-400" /> : entry.state === 'error' ? <X className="h-3 w-3 text-red-400" /> : <span className="mt-1 h-1 w-1 rounded-full bg-current opacity-30" />}</span>
+                <span className="min-w-0 whitespace-pre-wrap break-words">{entry.text}</span>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+      <ProviderSetupDialog open={providerSetupOpen} onOpenChange={setProviderSetupOpen} status={providerStatus} onStatusChange={setProviderStatus} initialTab={providerSetupTab} />
+    </div>
   )
 }

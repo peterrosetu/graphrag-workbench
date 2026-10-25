@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import path from 'node:path'
 import fs from 'node:fs/promises'
+import { clearIndexJobRecord } from '@/lib/server/indexJob'
 
 async function moveIfExists(src: string, dest: string) {
   try { await fs.stat(src) } catch { return }
@@ -16,20 +17,20 @@ export async function POST() {
     const arch = path.join(root, 'archives', archName)
     await fs.mkdir(arch, { recursive: true })
 
+    let name = archName
+    try {
+      const raw = await fs.readFile(path.join(root, 'output', 'kg.json'), 'utf-8')
+      const meta = JSON.parse(raw) as { name?: string }
+      if (meta?.name) name = String(meta.name)
+    } catch {}
+
     await moveIfExists(path.join(root, 'output'), path.join(arch, 'output'))
     await moveIfExists(path.join(root, 'cache'), path.join(arch, 'cache'))
     await moveIfExists(path.join(root, 'logs'), path.join(arch, 'logs'))
     await moveIfExists(path.join(root, 'input'), path.join(arch, 'input'))
 
     // Persist KG name into archive root as kg.json
-    const currentKgMetaPath = path.join(root, 'output', 'kg.json')
     const archKgMetaPath = path.join(arch, 'kg.json')
-    let name = archName
-    try {
-      const raw = await fs.readFile(currentKgMetaPath, 'utf-8')
-      const meta = JSON.parse(raw) as { name?: string }
-      if (meta?.name) name = String(meta.name)
-    } catch {}
     try {
       await fs.writeFile(archKgMetaPath, JSON.stringify({ name, archived_at: Date.now() }, null, 2))
     } catch {}
@@ -48,6 +49,7 @@ export async function POST() {
     try { await fs.writeFile(path.join(root, 'output', 'kg.json'), JSON.stringify({ name: '' }, null, 2)) } catch {}
     // Reset logs file
     try { await fs.writeFile(path.join(root, 'logs_history.log'), '') } catch {}
+    clearIndexJobRecord()
     return NextResponse.json({ ok: true, name: archName })
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : 'Failed to archive'

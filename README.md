@@ -1,303 +1,127 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/lyon-industries/.github/main/profile/lyon-industries-banner.svg" alt="Lyon Industries" width="100%">
+</p>
+
 # GraphRAG Workbench
 
+A local workbench for turning documents into an inspectable 3D knowledge graph.
 
-A modern, interactive web application for building and visualizing knowledge graphs using Microsoft's [GraphRAG](https://github.com/microsoft/graphrag) framework. Transform your documents into an explorable 3D knowledge graph with advanced AI-powered analysis and querying capabilities.
-
-![GraphRAG Workbench](https://img.shields.io/badge/GraphRAG-Workbench-blue)
-![Next.js](https://img.shields.io/badge/Next.js-15.5-black)
-![React](https://img.shields.io/badge/React-19.1-blue)
-![TypeScript](https://img.shields.io/badge/TypeScript-5-blue)
-
+GraphRAG Workbench wraps [Microsoft GraphRAG](https://github.com/microsoft/graphrag) with local document preparation, indexing controls, a live terminal, project management, and the original Three.js graph. It is a dedicated open-source desktop-style web app: clone it, run it, and configure local or cloud models inside the Builder.
 
 https://github.com/user-attachments/assets/1f588a45-07ca-4953-92ed-fc888fe28cff
 
+## Version 2.0
 
-## ✨ Features
+![GraphRAG Workbench 2.0 showing an isolated lunar-surface community and entity inspector in a front-on MacBook render](docs/screenshots/graphrag-workbench-2.0-community-macbook.webp)
 
-### 📊 Interactive 3D Visualization
-- **Immersive 3D Knowledge Graph**: Navigate through your data in a stunning 3D space with smooth animations
-- **Community Detection**: Visualize hierarchical community structures with color-coded boundaries
-- **Smart Node Sizing**: Entity importance reflected through dynamic node sizing based on centrality metrics
-- **Advanced Filtering**: Filter by entity types, community levels, and relationship weights
-- **Search & Highlight**: Real-time search with visual highlighting of matching entities
+*Inspect entity evidence, community hierarchy, and strongest relationships without leaving the live graph.*
 
-### 🗂️ Document Management
-- **PDF Processing**: Drag-and-drop PDF upload with automatic text extraction
-- **Batch Operations**: Process multiple documents simultaneously
-- **Archive Management**: Save and restore different knowledge graph versions
-- **Progress Tracking**: Real-time indexing progress with detailed logs
+- Microsoft GraphRAG 3.1.0, pinned with `uv`
+- per-build Local / Ollama and Cloud / OpenAI presets configured in the interface
+- full-screen 3D graph with search and community isolation
+- contextual Inspector for selected entities and their strongest connections
+- local Projects sheet for naming, loading, renaming, deleting, files, statistics, builds, and terminal output
+- native GraphRAG output-directory import plus portable Workbench bundle import/export
+- cancellable server-owned indexing with persisted workflow status; builds survive closing the Builder
+- live constellation population while a build runs: entities and relationships appear as extraction completes, communities as clustering completes
+- engine-log surfacing with fast failure on fatal provider errors (quota, authentication, missing model)
+- text-backed PDF validation and transactional file removal
+- no account, hosted database, or remote document service
 
-### 🤖 AI-Powered Analysis  
-- **GraphRAG Integration**: Leverage Microsoft's GraphRAG for entity extraction and relationship mapping
-- **Community Reports**: AI-generated summaries of detected communities
-- **Chat Interface**: Query your knowledge graph using natural language
-- **Multiple Search Modes**: Local, global, drift, and basic search strategies
+![GraphRAG Workbench 2.0 with the Inspector and Projects workspace open in a 45-degree MacBook render](docs/screenshots/graphrag-workbench-2.0-projects-macbook.webp)
 
-### 🎯 Advanced Features
-- **Community Isolator**: Focus on specific community hierarchies for detailed analysis
-- **Relationship Weighting**: Visualize connection strength with dynamic link thickness
-- **Bloom Effects**: Beautiful post-processing effects for enhanced visualization
-- **Responsive Design**: Optimized for desktop and tablet usage
+*Manage projects and monitor indexing while retaining the graph and selected-entity context.*
 
-## 🚀 Quick Start
+Chat is intentionally absent from 2.0 while its next interaction model is designed.
 
-### Prerequisites
-- Node.js 18+ 
-- OpenAI API key
-- Python 3.10+ (for GraphRAG backend)
+## Requirements
 
-### Installation
+- Node.js 20.9 or later
+- pnpm
+- Python 3.12
+- [uv](https://docs.astral.sh/uv/)
+- no model provider is required before first launch; the Builder walks through Ollama or OpenAI setup
 
-1. **Clone the repository**
-   ```bash
-   git clone https://github.com/ChristopherLyon/graphrag-workbench.git
-   cd graphrag-workbench
-   ```
+## Install
 
-2. **Install dependencies**
-   ```bash
-   npm install
-   # or
-   pnpm install
-   ```
-
-3. **Set up environment**
-   ```bash
-   cp .env.example .env
-   ```
-   
-   Edit `.env` and add your OpenAI API key:
-   ```
-   OPENAI_API_KEY=your_openai_api_key_here
-   ```
-
-4. **Configure GraphRAG**
-   
-   The `settings.yaml` file is pre-configured for OpenAI. Adjust if needed:
-   - Model settings (defaults to `gpt-4o-mini`)
-   - Embedding model (defaults to `text-embedding-3-small`)
-   - Processing parameters
-
-5. **Install GraphRAG Python package**
-   ```bash
-   pip install graphrag
-   ```
-
-6. **Start the development server**
-   ```bash
-   npm run dev
-   ```
-
-7. **Open your browser**
-   
-   Navigate to [http://localhost:3000](http://localhost:3000)
-
-## 📖 Usage Guide
-
-### Building Your First Knowledge Graph
-
-1. **Upload Documents**
-   - Click "Add PDFs" or drag and drop PDF files onto the Dataset card
-   - Supported formats: PDF files only
-
-2. **Run Indexing**
-   - Click the "Run Index" button to start the GraphRAG processing
-   - Monitor progress in real-time with detailed logs
-   - The process extracts entities, relationships, and communities from your documents
-
-3. **Explore the Graph**
-   - Once indexing completes, your 3D knowledge graph will appear
-   - Use mouse controls to navigate: drag to rotate, scroll to zoom, right-click to pan
-   - Click on nodes to inspect entities and their connections
-
-### Advanced Usage
-
-#### Community Analysis
-- Enable "Community Isolator" to focus on specific community hierarchies
-- Communities are organized in levels: Sector → System → Subsystem → Component → Element
-
-#### Search and Discovery
-- Use the search box (Cmd/Ctrl + K) to find specific entities
-- Matching entities will be highlighted in the visualization
-- Use the Inspector panel to view detailed entity information
-
-#### Chat Interface
-- Switch to the Chat tab to query your knowledge graph using natural language
-- Ask questions like "What are the main themes?" or "How are these entities connected?"
-
-#### Archive Management
-- Create archives of your current knowledge graph state
-- Restore previous versions to compare different document sets
-- Rename archives for better organization
-
-## 🏗️ Architecture
-
-### Frontend Stack
-- **Next.js 15.5**: React framework with App Router
-- **React Three Fiber**: 3D graphics rendering
-- **TailwindCSS**: Modern styling framework
-- **shadcn/ui**: High-quality UI components
-- **Three.js**: WebGL-based 3D graphics library
-
-### Key Components
-- **GraphVisualizer**: Main 3D visualization component with WebGL rendering
-- **CorpusPanel**: Document management and indexing interface  
-- **ChatPanel**: AI-powered natural language querying
-- **Inspector**: Detailed entity and relationship analysis
-
-### Backend Integration
-- **Next.js API Routes**: RESTful endpoints for data management
-- **GraphRAG Pipeline**: Microsoft's GraphRAG for knowledge extraction
-- **File System Storage**: Local storage for documents and processed data
-- **Streaming APIs**: Real-time progress updates during indexing
-
-### Data Flow
-1. **Document Upload** → PDF processing and text extraction
-2. **GraphRAG Processing** → Entity extraction, relationship mapping, community detection
-3. **Data Transformation** → JSON format optimization for web rendering
-4. **3D Visualization** → Force-directed layout with community clustering
-5. **Interactive Querying** → AI-powered search and analysis
-
-## ⚙️ Configuration
-
-### GraphRAG Settings (`settings.yaml`)
-The configuration file controls the GraphRAG processing pipeline:
-
-```yaml
-models:
-  default_chat_model:
-    type: openai_chat
-    model: gpt-4o-mini-2024-07-18
-    api_key: ${OPENAI_API_KEY}
-  
-  default_embedding_model:
-    type: openai_embedding  
-    model: text-embedding-3-small
-    api_key: ${OPENAI_API_KEY}
-
-extract_graph:
-  entity_types: [organization, person, geo, event]
-  max_gleanings: 1
-
-community_reports:
-  max_length: 2000
-  max_input_length: 8000
-```
-
-### Customization Options
-- **Entity Types**: Modify the types of entities to extract
-- **Model Selection**: Choose different OpenAI models for processing
-- **Chunking Parameters**: Adjust text processing chunk sizes
-- **Community Detection**: Configure clustering algorithms
-
-## 📁 Project Structure
-
-```
-graphrag-workbench/
-├── app/                    # Next.js App Router
-│   ├── api/               # API routes for data management
-│   ├── layout.tsx         # Root layout component
-│   └── page.tsx           # Main application page
-├── components/            # React components
-│   ├── ui/               # shadcn/ui components
-│   ├── GraphVisualizer.tsx # 3D visualization engine
-│   ├── CorpusPanel.tsx   # Document management
-│   ├── ChatPanel.tsx     # AI chat interface  
-│   └── Inspector.tsx     # Entity detail viewer
-├── lib/                  # Utility libraries
-│   ├── graphData.ts      # Data models and loaders
-│   ├── forceSimulation.ts # 3D layout algorithms
-│   └── utils.ts          # Helper functions
-├── settings.yaml         # GraphRAG configuration
-└── prompts/              # AI prompt templates
-```
-
-## 🛠️ Development
-
-### Running in Development Mode
 ```bash
-npm run dev
+git clone https://github.com/lyon-industries/graphrag-workbench.git
+cd graphrag-workbench
+pnpm install
+uv sync --frozen
+pnpm dev
 ```
 
-### Building for Production
+Open [http://127.0.0.1:3000](http://127.0.0.1:3000). Development and production commands bind to the local interface.
+
+## Configure builds in the interface
+
+Open **Projects → Build providers**. Both presets can remain configured at the same time:
+
+- **Local / Ollama** detects the Ollama installation and service, links to the official installer when absent, and pulls the selected completion and embedding models with visible progress. The default preset is Gemma 4 plus EmbeddingGemma at 768 dimensions.
+- **Cloud / OpenAI** accepts the API key and model names in a modal. The key is saved in the workbench-wide `.graphrag/providers.json`, restricted to the operating-system account (`0600`). It is outside every project, excluded from Git, and never returned to browser code.
+
+The Ollama and OpenAI bindings are workbench-wide settings, reused by every GraphRAG project. Each indexing run has an explicit **Run with Ollama** or **Run with OpenAI** command. Ollama avoids provider token charges and keeps model processing on the workstation; OpenAI is normally faster and can use a stronger extraction model. OpenAI indexing sends document content to the configured provider and can consume substantial model tokens.
+
+During a build the engine log is tailed into the Terminal. Fatal provider failures such as exhausted quota, a rejected key, or a missing model stop the run with the cause and recovery action named.
+
+## Build and inspect a graph
+
+1. Open **Projects**.
+2. Give the project a human-readable name.
+3. Add one or more text-backed PDFs.
+4. Select **Run with Ollama** or **Run with OpenAI** and follow each workflow in the Terminal. If that repository binding is not ready, the setup modal opens at the missing step.
+5. Close Projects to explore the graph.
+6. Select a node to open its Inspector; select a connected entity to traverse the graph.
+
+`Cmd/Ctrl + K` focuses entity search. Drag rotates, scroll zooms, and right-drag pans. **Isolate community** focuses the selected hierarchy.
+
+Image-only PDFs are rejected with an explicit terminal message. OCR is not included in 2.0. Removing a source schedules it for deletion; the file and its derived text are deleted only after the replacement graph builds successfully.
+
+## Import or export existing output
+
+The Projects source toolbar supports two import paths:
+
+- **Import directory** accepts a Microsoft GraphRAG `output/` folder containing at least `entities` and `relationships` as JSON or parquet. Supported parquet artifacts are converted locally before the active project is changed.
+- **Import bundle** accepts a `.graphrag.json` file previously exported by the workbench.
+
+**Export output** downloads the active project as a versioned `.graphrag.json` bundle containing the available entity, relationship, community, community-report, and text-unit tables. Imports are validated in a temporary directory before replacing graph artifacts. Source documents, provider credentials, caches, logs, and LanceDB indexes are not included in the portable bundle.
+
+## Local data flow
+
+```text
+text-backed PDF
+  -> local text extraction
+  -> Microsoft GraphRAG 3.1
+  -> parquet + LanceDB
+  -> local JSON conversion
+  -> Three.js graph + Inspector
+```
+
+Runtime documents, output, caches, logs, and project archives are excluded from Git. Configured model providers still receive the content required for their calls.
+
+## Quality gates
+
 ```bash
-npm run build
-npm run start
+pnpm typecheck
+pnpm lint
+pnpm build
+pnpm audit --prod
+uv lock --check
 ```
 
-### Code Quality
-```bash
-npm run lint        # ESLint checking
-npm run typecheck   # TypeScript validation
-```
+## Stack
 
-## 🤝 Contributing
+| Area | Implementation |
+| --- | --- |
+| Application | Next.js 16.2, React 19.2, TypeScript |
+| Graph | React Three Fiber, Three.js, `d3-force-3d` |
+| Engine | Microsoft GraphRAG 3.1.0, Python 3.12, `uv` |
+| Storage | local filesystem, parquet, JSON, LanceDB |
+| Progress | server-sent events and persisted local logs |
 
-Contributions are welcome! Please feel free to submit a Pull Request. For major changes, please open an issue first to discuss what you would like to change.
+## License
 
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+[MIT](LICENSE). Microsoft GraphRAG provides extraction, community analysis, and indexing. GraphRAG Workbench provides the local operator interface.
 
-## 📋 Requirements
-
-### System Requirements
-- **Node.js**: 18.0.0 or higher
-- **Python**: 3.10 or higher (for GraphRAG backend)
-- **Memory**: 8GB RAM minimum (16GB recommended for large documents)
-- **Storage**: SSD recommended for better I/O performance
-
-### Browser Compatibility
-- Chrome 90+
-- Firefox 88+
-- Safari 14+
-- Edge 90+
-
-WebGL 2.0 support required for 3D visualization.
-
-## 🐛 Troubleshooting
-
-### Common Issues
-
-**Graph not loading after indexing**
-- Check that all required JSON files are generated in the `output/` directory
-- Verify the API endpoints are accessible at `/api/data/`
-
-**Slow 3D performance**  
-- Reduce the number of visible communities in complex graphs
-- Try disabling bloom effects in crowded visualizations
-- Consider filtering to smaller entity subsets
-
-**Indexing fails**
-- Verify your OpenAI API key is correctly set in `.env`
-- Check that GraphRAG Python package is installed
-- Review the indexing logs for specific error messages
-
-**Memory issues with large documents**
-- Process documents in smaller batches
-- Increase Node.js memory limit: `export NODE_OPTIONS="--max-old-space-size=8192"`
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
-
-- [Microsoft GraphRAG](https://github.com/microsoft/graphrag) - Core knowledge graph extraction
-- [React Three Fiber](https://github.com/pmndrs/react-three-fiber) - 3D rendering capabilities
-- [shadcn/ui](https://ui.shadcn.com/) - Beautiful UI components
-- [Lucide Icons](https://lucide.dev/) - Clean, consistent iconography
-
-## 📞 Support
-
-If you encounter any issues or have questions:
-
-1. Check the [Issues](https://github.com/ChristopherLyon/graphrag-workbench/issues) page
-2. Review the troubleshooting section above
-3. Create a new issue with detailed information about your problem
-
----
-
-**Happy Knowledge Graphing! 🎉**
+Built by [Lyon Industries](https://lyon-industries.no) in Stavanger, Norway.

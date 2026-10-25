@@ -13,18 +13,28 @@ interface UploadEntry {
   removed_at?: number
 }
 
+// After a build, source PDFs live in input/_pdfs (only their extracted .txt
+// stays in input/), so both directories must be scanned or PDF rows vanish
+// from the corpus table as soon as a build runs.
 async function listInputFiles(root: string) {
-  const dir = path.join(root, 'input')
-  try {
-    const ents = await fs.readdir(dir, { withFileTypes: true })
-    const files = await Promise.all(ents.filter(e => e.isFile()).map(async e => {
-      const p = path.join(dir, e.name)
-      const st = await fs.stat(p)
-      const ext = e.name.toLowerCase().endsWith('.pdf') ? 'pdf' : 'txt'
-      return { name: e.name, size: st.size, mtime: st.mtimeMs, type: ext as 'pdf'|'txt' }
-    }))
-    return files.sort((a,b) => b.mtime - a.mtime)
-  } catch { return [] }
+  const dirs = [
+    { dir: path.join(root, 'input'), types: ['txt', 'pdf'] },
+    { dir: path.join(root, 'input', '_pdfs'), types: ['pdf'] },
+  ]
+  const files: Array<{ name: string; size: number; mtime: number; type: 'pdf'|'txt' }> = []
+  for (const { dir, types } of dirs) {
+    try {
+      const ents = await fs.readdir(dir, { withFileTypes: true })
+      for (const e of ents) {
+        if (!e.isFile()) continue
+        const ext: 'pdf'|'txt' = e.name.toLowerCase().endsWith('.pdf') ? 'pdf' : 'txt'
+        if (!types.includes(ext)) continue
+        const st = await fs.stat(path.join(dir, e.name))
+        files.push({ name: e.name, size: st.size, mtime: st.mtimeMs, type: ext })
+      }
+    } catch {}
+  }
+  return files.sort((a, b) => b.mtime - a.mtime)
 }
 
 async function readStats(root: string) {
@@ -53,59 +63,58 @@ async function readUploads(root: string): Promise<UploadEntry[]> {
   }
 }
 
-async function writeUploads(root: string, data: UploadEntry[]) {
-  const p = path.join(root, 'output', 'uploads.json')
-  await fs.mkdir(path.dirname(p), { recursive: true })
-  await fs.writeFile(p, JSON.stringify(data, null, 2))
-}
-
+// Read-only: this endpoint is polled while builds run and must never write
+// uploads.json, or it races the pipeline's own registry updates and rows
+// get silently dropped. Only upload/remove/build mutate the registry.
 export async function GET() {
   const root = process.cwd()
   const inputFiles = await listInputFiles(root)
   let outputStats = await readStats(root)
-  // Read KG name if present
   let kgName: string | undefined
   try {
     const raw = await fs.readFile(path.join(root, 'output', 'kg.json'), 'utf-8')
     const meta = JSON.parse(raw) as { name?: string }
     if (meta?.name) kgName = String(meta.name)
   } catch {}
-  // If stats missing or all zeros, count directly from JSON files
+  // The generated JSON files are the UI's authoritative dataset. Count them
+  // directly so stale GraphRAG stats cannot report a partially empty graph.
   try {
     const dataDir = path.join(root, 'output')
     const safeCount = async (name: string) => {
       try { const raw = await fs.readFile(path.join(dataDir, name), 'utf-8'); const arr = JSON.parse(raw); return Array.isArray(arr) ? arr.length : 0 } catch { return 0 }
     }
-    const zeroOrMissing = !outputStats || ((outputStats.entities ?? 0) + (outputStats.relationships ?? 0) + (outputStats.communities ?? 0) + (outputStats.text_units ?? 0) === 0)
-    if (zeroOrMissing) {
-      const entities = await safeCount('entities.json')
-      const relationships = await safeCount('relationships.json')
-      const communities = await safeCount('communities.json')
-      const text_units = await safeCount('text_units.json')
-      const total = entities + relationships + communities + text_units
-      if (total > 0) {
-        let last_index_time: string | undefined
+    const entities = await safeCount('entities.json')
+    const relationships = await safeCount('relationships.json')
+    const communities = await safeCount('communities.json')
+    const text_units = await safeCount('text_units.json')
+    const total = entities + relationships + communities + text_units
+    if (total > 0) {
+      let last_index_time = outputStats?.last_index_time
+      if (!last_index_time) {
         try { const st = await fs.stat(path.join(dataDir, 'entities.json')); last_index_time = new Date(st.mtimeMs).toISOString() } catch {}
-        outputStats = { entities, relationships, communities, text_units, last_index_time }
-      } else {
-        outputStats = undefined
       }
+      outputStats = { entities, relationships, communities, text_units, last_index_time }
+    } else {
+      outputStats = undefined
     }
   } catch {}
-  // Merge with uploads registry
   const uploads = await readUploads(root)
-  const byName = new Map<string, UploadEntry>(uploads.map((u) => [u.name, u]))
-  // ensure every file in input has an entry
-  inputFiles.forEach((f) => {
-    if (!byName.has(f.name)) {
-      byName.set(f.name, { name: f.name, size: f.size, mtime: f.mtime, type: f.type, status: 'pending' })
+  const byName = new Map<string, UploadEntry>()
+  for (const u of uploads) {
+    byName.set(u.name, { ...u, status: u.status === 'removed' ? 'pending_removal' : u.status })
+  }
+  for (const f of inputFiles) {
+    const existing = byName.get(f.name)
+    if (existing) {
+      existing.size = f.size
+      existing.mtime = f.mtime
+      existing.type = f.type
     } else {
-      const u = byName.get(f.name)!
-      u.size = f.size; u.mtime = f.mtime; u.type = f.type
+      // File exists on disk but not in the registry (e.g. registry lost in a
+      // project swap). Resurface it; an already-built graph implies indexed.
+      byName.set(f.name, { name: f.name, size: f.size, mtime: f.mtime, type: f.type, status: outputStats ? 'indexed' : 'pending' })
     }
-  })
+  }
   const merged: UploadEntry[] = Array.from(byName.values()).sort((a, b) => (b.mtime || 0) - (a.mtime || 0))
-  // Persist merged registry
-  await writeUploads(root, merged)
   return NextResponse.json({ uploads: merged, outputStats, queue: [], kgName })
 }
